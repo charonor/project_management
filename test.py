@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from pathlib import Path
-import random
-import sys
+import io
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-
-APP_BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-DATA_FILE = APP_BASE_DIR / "manpower_data.csv"
 
 COLUMNS = [
 	"客户",
@@ -28,7 +23,6 @@ COLUMNS = [
 ]
 
 VERSION_TYPE_OPTIONS = ["mr", "smr", "在研"]
-DISCARD_REASON_OPTIONS = ["", "需求变更", "质量问题", "资源冲突", "客户取消", "重复版本", "其他"]
 
 
 def month_start(day: date) -> date:
@@ -40,142 +34,8 @@ def month_end(day: date) -> date:
 	return next_month - timedelta(days=next_month.day)
 
 
-def generate_simulated_rows(base_df: pd.DataFrame, months: int = 24, seed: int = 42) -> list[dict[str, object]]:
-	rng = random.Random(seed)
-	today = date.today()
-	start_month = month_start(today) - timedelta(days=30 * (months - 1))
-	start_month = month_start(start_month)
-	testers = ["张敏", "李楠", "王强", "周颖", "陈涛", "赵雪"]
-
-	customer_project_map = {
-		"华东客户": ["A项目", "A项目增强", "中台重构"],
-		"华南客户": ["B项目", "支付升级", "数据治理"],
-		"海外客户": ["C项目", "C项目插件", "边缘计算"],
-		"政企客户": ["D项目", "安全合规", "运维平台"],
-	}
-
-	rows: list[dict[str, object]] = []
-	existing_versions = set(base_df["版本"].astype("string").fillna("").tolist()) if not base_df.empty else set()
-
-	for month_idx in range(months):
-		current_month_start = month_start(start_month + timedelta(days=31 * month_idx))
-		current_month_end = month_end(current_month_start)
-
-		for customer, projects in customer_project_map.items():
-			for project in projects:
-				mr_count = rng.randint(0, 3)
-				smr_count = rng.randint(0, 2)
-				in_progress_count = rng.randint(0, 2)
-
-				for vtype, count in [("mr", mr_count), ("smr", smr_count), ("在研", in_progress_count)]:
-					for idx in range(1, count + 1):
-						version_name = f"{project[:2]}-{current_month_start:%Y%m}-{vtype}-{idx}"
-						if version_name in existing_versions:
-							continue
-						existing_versions.add(version_name)
-
-						start_offset = rng.randint(0, 18)
-						end_offset = start_offset + rng.randint(5, 25)
-						start_day = current_month_start + timedelta(days=start_offset)
-						end_day = min(current_month_end, current_month_start + timedelta(days=end_offset))
-
-						input_manpower = round(rng.uniform(1.5, 12.0), 1)
-						is_discard = vtype != "在研" and rng.random() < 0.22
-						discard_manpower = round(input_manpower * rng.uniform(0.3, 1.0), 1) if is_discard else 0.0
-						discard_reason = rng.choice(DISCARD_REASON_OPTIONS[1:]) if is_discard else ""
-
-						rows.append(
-							{
-								"客户": customer,
-								"项目": project,
-								"测试人员": rng.choice(testers),
-								"版本": version_name,
-								"版本类型": vtype,
-								"开始日期": start_day,
-								"结束日期": end_day,
-								"投入人力": input_manpower,
-								"是否为废弃版本": is_discard,
-								"废弃版本人力": discard_manpower,
-								"废弃原因": discard_reason,
-							}
-						)
-
-	return rows
-
-
-def ensure_demo_coverage(df: pd.DataFrame) -> pd.DataFrame:
-	if df.empty:
-		base = pd.DataFrame(default_rows(), columns=COLUMNS)
-		return normalize_dataframe(base)
-
-	temp = df.copy()
-	temp_end = pd.to_datetime(temp["结束日期"], errors="coerce")
-	month_span = 0
-	if temp_end.notna().any():
-		month_span = (temp_end.max().year - temp_end.min().year) * 12 + (temp_end.max().month - temp_end.min().month) + 1
-
-	if len(temp) >= 140 and month_span >= 12 and temp["项目"].nunique() >= 4 and temp["客户"].nunique() >= 3:
-		return temp
-
-	append_rows = generate_simulated_rows(temp, months=24, seed=2026)
-	if not append_rows:
-		return temp
-
-	merged = pd.concat([temp, pd.DataFrame(append_rows)], ignore_index=True)
-	return normalize_dataframe(merged)
-
-
-def default_rows() -> list[dict[str, object]]:
-	today = date.today()
-	return [
-		{
-			"客户": "华东客户",
-			"项目": "A项目",
-			"测试人员": "张敏",
-			"版本": "A-202607-mr-1",
-			"版本类型": "mr",
-			"开始日期": today - timedelta(days=45),
-			"结束日期": today - timedelta(days=15),
-			"投入人力": 6.0,
-			"是否为废弃版本": False,
-			"废弃版本人力": 0.0,
-			"废弃原因": "",
-		},
-		{
-			"客户": "华东客户",
-			"项目": "A项目",
-			"测试人员": "李楠",
-			"版本": "A-202607-smr-1",
-			"版本类型": "smr",
-			"开始日期": today - timedelta(days=20),
-			"结束日期": today - timedelta(days=1),
-			"投入人力": 4.0,
-			"是否为废弃版本": True,
-			"废弃版本人力": 4.0,
-			"废弃原因": "需求变更",
-		},
-		{
-			"客户": "华南客户",
-			"项目": "B项目",
-			"测试人员": "王强",
-			"版本": "B-202607-在研-1",
-			"版本类型": "在研",
-			"开始日期": today - timedelta(days=35),
-			"结束日期": today - timedelta(days=5),
-			"投入人力": 8.0,
-			"是否为废弃版本": False,
-			"废弃版本人力": 0.0,
-			"废弃原因": "",
-		},
-	]
-
-
-def default_dataframe() -> pd.DataFrame:
-	base = pd.DataFrame(default_rows(), columns=COLUMNS)
-	merged = pd.concat([base, pd.DataFrame(generate_simulated_rows(base, months=24, seed=2025))], ignore_index=True)
-	return normalize_dataframe(merged)
-
-
+def empty_dataframe() -> pd.DataFrame:
+	return normalize_dataframe(pd.DataFrame(columns=COLUMNS))
 def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 	normalized = df.copy()
 	for col in COLUMNS:
@@ -214,31 +74,65 @@ def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 			return False
 		return bool_map.get(str(value).strip().lower(), False)
 
-	normalized["是否为废弃版本"] = normalized["是否为废弃版本"].apply(to_bool)
+	normalized["是否为废弃版本"] = normalized["是否为废弃版本"].apply(to_bool).astype("bool")
+	discard_bool = normalized["是否为废弃版本"].to_numpy()
 	normalized.loc[~normalized["是否为废弃版本"], "废弃版本人力"] = 0.0
 	normalized.loc[~normalized["是否为废弃版本"], "废弃原因"] = ""
-	normalized.loc[
-		normalized["是否为废弃版本"] & (normalized["废弃原因"].str.strip() == ""),
-		"废弃原因",
-	] = "其他"
+	empty_reason = normalized["废弃原因"].str.strip().to_numpy() == ""
+	normalized.loc[discard_bool & empty_reason, "废弃原因"] = "其他"
 
 	normalized = normalized[COLUMNS]
 	return normalized
 
 
-def load_data() -> pd.DataFrame:
-	if DATA_FILE.exists():
-		loaded = pd.read_csv(DATA_FILE)
-		normalized = normalize_dataframe(loaded)
-		return ensure_demo_coverage(normalized)
-	return ensure_demo_coverage(default_dataframe())
+def read_csv_bytes(data: bytes) -> pd.DataFrame:
+	last_error: Exception | None = None
+	for encoding in ("utf-8-sig", "utf-8", "gbk", "latin-1"):
+		try:
+			return pd.read_csv(io.BytesIO(data), encoding=encoding)
+		except UnicodeDecodeError as exc:
+			last_error = exc
+	raise ValueError(f"无法识别 CSV 文件编码：{last_error}")
 
 
-def save_data(df: pd.DataFrame) -> None:
-	to_save = df.copy()
-	to_save["开始日期"] = pd.to_datetime(to_save["开始日期"], errors="coerce").dt.strftime("%Y-%m-%d")
-	to_save["结束日期"] = pd.to_datetime(to_save["结束日期"], errors="coerce").dt.strftime("%Y-%m-%d")
-	to_save.to_csv(DATA_FILE, index=False, encoding="utf-8-sig")
+def read_uploaded_file(file_name: str, data: bytes) -> pd.DataFrame:
+	lower_name = file_name.lower()
+	if lower_name.endswith(".csv"):
+		df = read_csv_bytes(data)
+	elif lower_name.endswith(".xlsx"):
+		df = pd.read_excel(io.BytesIO(data), engine="openpyxl")
+	elif lower_name.endswith(".xls"):
+		try:
+			df = pd.read_excel(io.BytesIO(data), engine="xlrd")
+		except ImportError:
+			raise ValueError("读取 .xls 需要安装 xlrd，请将文件另存为 .xlsx 后重新上传。") from None
+	else:
+		raise ValueError("不支持的文件类型，请上传 .xlsx / .xls / .csv 文件。")
+
+	missing_cols = [col for col in COLUMNS if col not in df.columns]
+	if missing_cols:
+		raise ValueError(f"文件缺少必需列：{'、'.join(missing_cols)}")
+	return normalize_dataframe(df)
+
+
+FILTER_WIDGET_KEYS = [
+	"filter_time_mode",
+	"filter_quick_range",
+	"filter_start_date",
+	"filter_end_date",
+	"filter_discard",
+	"filter_customers",
+	"filter_projects",
+	"filter_types",
+	"filter_testers",
+	"filter_reasons",
+	"filter_version_kw",
+]
+
+
+def reset_filter_state() -> None:
+	for key in FILTER_WIDGET_KEYS:
+		st.session_state.pop(key, None)
 
 
 def filter_by_date(df: pd.DataFrame, start_date: date, end_date: date) -> pd.DataFrame:
@@ -356,28 +250,60 @@ def render_line_chart(
 
 def main() -> None:
 	st.set_page_config(page_title="项目版本人力看板", page_icon="📊", layout="wide")
-	header_left, header_right = st.columns([8, 1])
-	with header_left:
-		st.title("项目版本人力数据表与看板")
-		st.caption("支持客户/项目/版本类型筛选，按月半年年查看趋势、废弃率与人力对比。")
-	with header_right:
-		if st.button("刷新", width="stretch"):
-			st.session_state.raw_df = load_data()
-			st.rerun()
+	st.title("项目版本人力数据表与看板")
+	st.caption("支持客户/项目/版本类型筛选，按月半年年查看趋势、废弃率与人力对比。")
 
 	if "raw_df" not in st.session_state:
-		st.session_state.raw_df = load_data()
+		st.session_state.raw_df = empty_dataframe()
+		st.session_state.upload_name = None
+		st.session_state.upload_bytes = None
+
+	st.subheader("数据维护方式")
+	st.caption("所有图表数据均来自上传的 Excel 文件；未上传文件时，图表数据为空。")
+	uploaded = st.file_uploader(
+		"上传 Excel 数据文件",
+		type=["xlsx", "xls", "csv"],
+		key="excel_uploader",
+		help="文件需包含列：客户、项目、测试人员、版本、版本类型、开始日期、结束日期、投入人力、是否为废弃版本、废弃版本人力、废弃原因。",
+	)
+	if uploaded is not None:
+		uploaded_data = uploaded.getvalue()
+		if uploaded_data != st.session_state.get("upload_bytes"):
+			try:
+				new_df = read_uploaded_file(uploaded.name, uploaded_data)
+			except Exception as exc:
+				st.error(f"上传文件读取失败，已保留原数据：{exc}")
+			else:
+				st.session_state.raw_df = new_df
+				st.session_state.upload_name = uploaded.name
+				st.session_state.upload_bytes = uploaded_data
+				reset_filter_state()
+				st.success(f"已加载上传文件：{uploaded.name}，共 {len(new_df)} 行。")
+	elif st.session_state.get("upload_bytes") is not None:
+		st.session_state.raw_df = empty_dataframe()
+		st.session_state.upload_name = None
+		st.session_state.upload_bytes = None
+		reset_filter_state()
+		st.info("已清除上传文件，图表数据为空。")
+
+	source_label = (
+		f"已上传文件：{st.session_state.get('upload_name', '')}"
+		if st.session_state.get("upload_bytes")
+		else "未上传 Excel，图表数据为空"
+	)
+	st.caption(f"当前数据来源：{source_label}｜共 {len(st.session_state.raw_df)} 行")
 
 	with st.sidebar:
 		st.header("筛选条件")
 		today = date.today()
-		time_mode = st.radio("时间选择方式", ["快捷范围", "自定义范围"], index=0)
+		time_mode = st.radio("时间选择方式", ["快捷范围", "自定义范围"], index=0, key="filter_time_mode")
 
 		quick_range = st.selectbox(
 			"快捷时间范围",
 			["本月", "上月", "最近30天", "最近90天", "今年"],
 			index=0,
 			disabled=time_mode != "快捷范围",
+			key="filter_quick_range",
 		)
 
 		if quick_range == "本月":
@@ -401,16 +327,9 @@ def main() -> None:
 			start_date, end_date = default_range
 			st.caption(f"当前快捷范围：{start_date} 到 {end_date}")
 		else:
-			selected_range = st.date_input(
-				"结束日期范围",
-				value=default_range,
-				help="统计仅包含结束日期在该范围内的版本记录。",
-			)
-
-			if isinstance(selected_range, tuple) and len(selected_range) == 2:
-				start_date, end_date = selected_range
-			else:
-				start_date, end_date = default_range
+			default_start, default_end = default_range
+			start_date = st.date_input("开始日期", value=default_start, key="filter_start_date")
+			end_date = st.date_input("结束日期", value=default_end, key="filter_end_date")
 
 		if start_date > end_date:
 			start_date, end_date = end_date, start_date
@@ -419,6 +338,7 @@ def main() -> None:
 			"版本状态",
 			["全部版本", "仅废弃版本", "仅非废弃版本"],
 			index=0,
+			key="filter_discard",
 		)
 
 		customer_options = sorted(
@@ -431,8 +351,9 @@ def main() -> None:
 		selected_customers = st.multiselect(
 			"客户筛选",
 			options=customer_options,
-			default=customer_options,
-			help="可按客户横向对比不同项目版本。",
+			default=[],
+			help="默认不筛选，显示全部客户；选择后仅显示所选客户。",
+			key="filter_customers",
 		)
 
 		project_options = sorted(
@@ -445,14 +366,17 @@ def main() -> None:
 		selected_projects = st.multiselect(
 			"项目筛选",
 			options=project_options,
-			default=project_options,
-			help="不选择即显示全部项目。",
+			default=[],
+			help="默认不筛选，显示全部项目；选择后仅显示所选项目。",
+			key="filter_projects",
 		)
 
 		selected_types = st.multiselect(
 			"版本类型筛选",
 			options=VERSION_TYPE_OPTIONS,
-			default=VERSION_TYPE_OPTIONS,
+			default=[],
+			help="默认不筛选，显示全部版本类型。",
+			key="filter_types",
 		)
 
 		tester_options = sorted(
@@ -465,7 +389,9 @@ def main() -> None:
 		selected_testers = st.multiselect(
 			"测试人员筛选",
 			options=tester_options,
-			default=tester_options,
+			default=[],
+			help="默认不筛选，显示全部测试人员；选择后仅显示所选人员。",
+			key="filter_testers",
 		)
 
 		reason_options = sorted(
@@ -480,25 +406,14 @@ def main() -> None:
 			options=reason_options,
 			default=[],
 			help="不选表示不过滤废弃原因。",
+			key="filter_reasons",
 		)
 
-		version_keyword = st.text_input("版本关键字", value="", placeholder="例如 202607 / mr")
-
-		if st.button("追加模拟数据（24个月）", width="stretch"):
-			sim_df = pd.DataFrame(generate_simulated_rows(st.session_state.raw_df, months=24, seed=random.randint(1, 999999)))
-			if not sim_df.empty:
-				st.session_state.raw_df = normalize_dataframe(
-					pd.concat([st.session_state.raw_df, sim_df], ignore_index=True)
-				)
-				st.success(f"已追加模拟数据 {len(sim_df)} 条，可点击保存写入CSV。")
-				st.rerun()
+		version_keyword = st.text_input("版本关键字", value="", placeholder="例如 202607 / mr", key="filter_version_kw")
 
 		st.divider()
 		label_mode = st.radio("标签显示", ["全部标签", "仅末端标签"], index=0)
 		show_all_labels = label_mode == "全部标签"
-
-	st.subheader("数据维护方式")
-	st.info("页面内数据表编辑区已移除。请直接在 Excel 中维护 manpower_data.csv，再点击页面右上角“刷新”加载最新数据。")
 
 	normalized_edited = normalize_dataframe(st.session_state.raw_df)
 
@@ -533,7 +448,7 @@ def main() -> None:
 	m5.metric("客户数", f"{filtered['客户'].nunique() if not filtered.empty else 0}")
 
 	if filtered.empty:
-		st.info("当前时间范围内没有数据，请调整筛选条件或录入数据。")
+		st.info("当前没有可展示的数据：请先在上方上传 Excel 数据文件，或调整筛选条件后重试。")
 		return
 
 	st.divider()
